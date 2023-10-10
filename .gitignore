@@ -1,0 +1,11 @@
+Data/*
+Results*
+Debug/*
+Plots/*
+__pycache__/
+*.png
+*.pdf
+*.npz
+*.txt
+*.csv
+
