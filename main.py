@@ -23,6 +23,7 @@ from datasets import (
     prepare_split_cifar100_tasks,
     prepare_permuted_mnist_tasks,
     prepare_split_mnist_tasks,
+    prepare_tinyimagenet_tasks,
 )
 
 
@@ -385,6 +386,7 @@ def evaluate_previous_tasks(
     """
     # Calculate accuracy for each previously trained task
     # as well as for the last trained task
+    # Here noise should be added to the embedding vectors.
     hypernetwork.eval()
     target_network.eval()
     for task in range(parameters["number_of_task"] + 1):
@@ -839,7 +841,7 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
       *path_to_datasets*: (str) path to files with datasets
       *parameters*: (dict) contains multiple experiment hyperparameters
       *dataset*: (str) dataset for calculation: PermutedMNIST,
-                 CIFAR100 or SplitMNIST
+                 CIFAR100, TinyImageNet or SplitMNIST
 
     Returns learned hypernetwork, target network and a dataframe
     with single results.
@@ -864,6 +866,13 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
             validation_size=parameters["no_of_validation_samples"],
             use_augmentation=parameters["augmentation"],
             number_of_tasks=parameters["number_of_tasks"],
+        )
+    elif dataset == 'TinyImageNet':
+        dataset_tasks_list = prepare_tinyimagenet_tasks(
+            path_to_datasets,
+            seed=parameters["seed"],
+            validation_size=parameters["no_of_validation_samples"],
+            number_of_tasks=parameters["number_of_tasks"]
         )
     else:
         raise ValueError("Wrong name of the dataset!")
@@ -912,7 +921,8 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
 if __name__ == "__main__":
     unittest_prepare_network_sparsity()
     path_to_datasets = "./Data"
-    dataset = "CIFAR100"  # 'PermutedMNIST', 'CIFAR100', 'SplitMNIST'
+    # Options: 'PermutedMNIST', 'CIFAR100', 'SplitMNIST', 'TinyImageNet'
+    dataset = "TinyImageNet"
     part = 0
     create_grid_search = False
     if create_grid_search:
