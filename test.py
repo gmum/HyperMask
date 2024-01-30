@@ -40,7 +40,9 @@ class Test(unittest.TestCase):
         )
         test_1_BN = None
         test_1_param_shapes = [2, 1, 3]
-        test_network_1 = TestModule(test_weights_1, test_1_BN, test_1_param_shapes)
+        test_network_1 = TestModule(
+            test_weights_1, test_1_BN, test_1_param_shapes
+        )
         test_mask_1 = [
             torch.Tensor([[1, 0, 1], [0, 1, 1]]).to(device=self.device),
             torch.Tensor([[1, 0, 0, 1]]).to(device=self.device),
@@ -49,11 +51,17 @@ class Test(unittest.TestCase):
             ),
         ]
         gt_mask_1 = [
-            torch.Tensor([[1.2, 0.0, 5.0], [0.0, -2.1, 3.0]]).to(device=self.device),
+            torch.Tensor([[1.2, 0.0, 5.0], [0.0, -2.1, 3.0]]).to(
+                device=self.device
+            ),
             torch.Tensor([[1.35, 0.0, 0.0, 2.4]]).to(device=self.device),
             # Last layer will not be modified
             torch.Tensor(
-                [[-0.6, 0.3, 0.4, -0.85], [1.2, 1.8, 1.9, 1.5], [-1.0, 2.0, -0.1, 0.8]]
+                [
+                    [-0.6, 0.3, 0.4, -0.85],
+                    [1.2, 1.8, 1.9, 1.5],
+                    [-1.0, 2.0, -0.1, 0.8],
+                ]
             ).to(device=self.device),
         ]
         output_sparse_weights = apply_mask_to_weights_of_network(
@@ -67,7 +75,9 @@ class Test(unittest.TestCase):
         test_weights_2 = nn.ParameterList(
             [
                 torch.nn.Parameter(
-                    torch.Tensor([[0.75, 2.2, -1.85, 2.37]]).to(device=self.device)
+                    torch.Tensor([[0.75, 2.2, -1.85, 2.37]]).to(
+                        device=self.device
+                    )
                 ),
                 torch.nn.Parameter(
                     torch.Tensor([[0.0, 1.1, 0.2, 0.7]]).to(device=self.device)
@@ -101,15 +111,23 @@ class Test(unittest.TestCase):
         gt_mask_2 = [
             torch.Tensor([[0.75, 2.2, -1.85, 2.37]]).to(device=self.device),
             torch.Tensor([[0.0, 1.1, 0.2, 0.7]]).to(device=self.device),
-            torch.Tensor([[1.2, 0.0, 5.0], [0.0, -2.1, 3.0]]).to(device=self.device),
+            torch.Tensor([[1.2, 0.0, 5.0], [0.0, -2.1, 3.0]]).to(
+                device=self.device
+            ),
             torch.Tensor([[1.35, 0.0, 0.0, 2.4]]).to(device=self.device),
             # Last layer will not be modified
             torch.Tensor(
-                [[-0.6, 0.3, 0.4, -0.85], [1.2, 1.8, 1.9, 1.5], [-1.0, 2.0, -0.1, 0.8]]
+                [
+                    [-0.6, 0.3, 0.4, -0.85],
+                    [1.2, 1.8, 1.9, 1.5],
+                    [-1.0, 2.0, -0.1, 0.8],
+                ]
             ).to(device=self.device),
         ]
         test_2_param_shapes = [1, 1, 2, 1, 3]
-        test_network_2 = TestModule(test_weights_2, test_2_BN, test_2_param_shapes)
+        test_network_2 = TestModule(
+            test_weights_2, test_2_BN, test_2_param_shapes
+        )
         output_sparse_weights = apply_mask_to_weights_of_network(
             test_network_2, test_mask_1
         )

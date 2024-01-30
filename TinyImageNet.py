@@ -1,3 +1,11 @@
+"""
+Implementation of TinyImageNet for continual learning tasks.
+
+Parts of the following code come from:
+- https://github.com/DennisHanyuanXu/Tiny-ImageNet/blob/master/src/data_prep.py,
+- https://github.com/pytorch/vision/issues/6127#issuecomment-1555049003
+"""
+
 import os
 import numpy as np
 import time
@@ -49,14 +57,19 @@ class TinyImageNet(Dataset):
             build_from_scratch = False
 
         if build_from_scratch:
-            archive_fn = os.path.join(self.data_path, TinyImageNet._DOWNLOAD_FILE)
+            archive_fn = os.path.join(
+                self.data_path, TinyImageNet._DOWNLOAD_FILE
+            )
             print(archive_fn)
 
             if not os.path.exists(self.extracted_data_dir):
                 print(f"Extracted data dir: {self.extracted_data_dir}")
                 print("Downloading dataset...")
                 urllib.request.urlretrieve(
-                    (f"{TinyImageNet._DOWNLOAD_PATH}" f"{TinyImageNet._DOWNLOAD_FILE}"),
+                    (
+                        f"{TinyImageNet._DOWNLOAD_PATH}"
+                        f"{TinyImageNet._DOWNLOAD_FILE}"
+                    ),
                     archive_fn,
                 )
                 zf = ZipFile(archive_fn, "r")
@@ -80,21 +93,28 @@ class TinyImageNet(Dataset):
 
         # Transform labels to the shape proper for neural networks
         self._translate_labels()
-        self.train_data, self.train_labels = self.prepare_training_test_set_with_labels(
-            mode="train"
-        )
-        self.test_data, self.test_labels = self.prepare_training_test_set_with_labels(
-            mode="test"
-        )
+        (
+            self.train_data,
+            self.train_labels,
+        ) = self.prepare_training_test_set_with_labels(mode="train")
+        (
+            self.test_data,
+            self.test_labels,
+        ) = self.prepare_training_test_set_with_labels(mode="test")
         if self._use_one_hot:
-            self.train_labels = self._to_one_hot(self.train_labels, reverse=False)
+            self.train_labels = self._to_one_hot(
+                self.train_labels, reverse=False
+            )
             self.test_labels = self._to_one_hot(self.test_labels, reverse=False)
 
         # Set names of consecutive classes
         self._read_label_names()
         # Standardization should be performed both in the case of augmented
         # and non-augmented datasets
-        self.train_transform, self.test_transform = self.torch_input_transforms()
+        (
+            self.train_transform,
+            self.test_transform,
+        ) = self.torch_input_transforms()
         if not use_data_augmentation:
             self.train_transform = self.test_transform
         # Prepare training, validation and test sets
@@ -122,7 +142,9 @@ class TinyImageNet(Dataset):
             [
                 transforms.ToPILImage("RGB"),
                 transforms.ToTensor(),
-                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                transforms.Normalize(
+                    (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+                ),
             ]
         )
 
@@ -133,7 +155,9 @@ class TinyImageNet(Dataset):
                 transforms.RandomHorizontalFlip(),
                 transforms.Resize((64, 64)),
                 transforms.ToTensor(),
-                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                transforms.Normalize(
+                    (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+                ),
             ]
         )
 
@@ -149,7 +173,12 @@ class TinyImageNet(Dataset):
         pass
 
     def input_to_torch_tensor(
-        self, x, device, mode="inference", force_no_preprocessing=False, sample_ids=None
+        self,
+        x,
+        device,
+        mode="inference",
+        force_no_preprocessing=False,
+        sample_ids=None,
     ):
         """
         Prepare mapping of Numpy arrays to PyTorch tensors.
@@ -207,15 +236,18 @@ class TinyImageNet(Dataset):
         # to the flattened image.
         x = (x * 255.0).astype("uint8")
         x = x.reshape(-1, *img_shape)
-        x = torch.stack([transform(x[i, ...]) for i in range(x.shape[0])]).to(device)
+        x = torch.stack([transform(x[i, ...]) for i in range(x.shape[0])]).to(
+            device
+        )
         x = x.permute(0, 2, 3, 1)
         x = x.contiguous().view(-1, np.prod(img_shape))
         return x
 
-    # TODO: Add license information
-
     def prepare_training_test_set_with_labels(self, mode="train"):
         """
+        Function implemented on the basis of:
+        https://github.com/pytorch/vision/issues/6127#issuecomment-1555049003
+
         Arguments:
         ----------
            *mode* (optional string) 'train' for the training set or 'test'
@@ -230,7 +262,10 @@ class TinyImageNet(Dataset):
         elif mode == "test":
             id_dict_test = {}
             for i, line in enumerate(
-                open(f"{self.data_path}/tiny-imagenet-200/val/val_annotations.txt", "r")
+                open(
+                    f"{self.data_path}/tiny-imagenet-200/val/val_annotations.txt",
+                    "r",
+                )
             ):
                 current_info = line.split("\t")
                 img, id = current_info[0], current_info[1]
@@ -272,7 +307,9 @@ class TinyImageNet(Dataset):
         Set a dictionary with names of consecutive classes of TinyImageNet.
         """
         class_names = dict()
-        loaded_file = open(os.path.join(self.extracted_data_dir, "words.txt"), "r")
+        loaded_file = open(
+            os.path.join(self.extracted_data_dir, "words.txt"), "r"
+        )
         names = loaded_file.readlines()
         for current_class in names:
             line = current_class.strip("\n").split("\t")
@@ -300,9 +337,10 @@ class TinyImageNet(Dataset):
             else:
                 self._no_of_val_samples = self._validation_size
 
-            self._data["train_inds"], self._data["val_inds"] = self._select_val_indices(
-                no_of_classes
-            )
+            (
+                self._data["train_inds"],
+                self._data["val_inds"],
+            ) = self._select_val_indices(no_of_classes)
 
         else:
             self.train_labels = self.train_labels.squeeze()
@@ -313,13 +351,17 @@ class TinyImageNet(Dataset):
             self.train_labels.shape[0] + self.test_labels.shape[0],
         )
 
-        self._data["in_data"] = np.concatenate([self.train_data, self.test_data])
+        self._data["in_data"] = np.concatenate(
+            [self.train_data, self.test_data]
+        )
         del self.train_data
         del self.test_data
 
         if not self._use_one_hot:
             self.train_labels = np.expand_dims(self.train_labels, axis=1)
-        self._data["out_data"] = np.concatenate([self.train_labels, self.test_labels])
+        self._data["out_data"] = np.concatenate(
+            [self.train_labels, self.test_labels]
+        )
         del self.train_labels
         del self.test_labels
 
@@ -340,7 +382,9 @@ class TinyImageNet(Dataset):
           *test_indices*: (list) contains indices of elements in the test set
         """
         # 40 is the number of tasks
-        self._no_of_val_samples_per_class = int(self._no_of_val_samples / no_of_classes)
+        self._no_of_val_samples_per_class = int(
+            self._no_of_val_samples / no_of_classes
+        )
         if not self._use_one_hot:
             self.train_labels = self.train_labels.squeeze()
             train_labels_for_val_separation = self.train_labels
@@ -403,7 +447,8 @@ class TinyImageNet(Dataset):
         no_of_train_samples_per_class = train_labels.shape[0] / 5
         for label in temporary_labels:
             assert (
-                np.count_nonzero(train_labels == label) == no_of_train_samples_per_class
+                np.count_nonzero(train_labels == label)
+                == no_of_train_samples_per_class
             )
 
     def _translate_labels(self):

@@ -8,7 +8,7 @@ import seaborn as sns
 import torch.optim as optim
 from hypnettorch.mnets import MLP
 from hypnettorch.mnets.resnet import ResNet
-from hypnettorch.mnets.zenkenet import ZenkeNet
+from ZenkeNet64 import ZenkeNet
 from hypnettorch.hnets import HMLP
 from hypnettorch.hnets.chunked_mlp_hnet import ChunkedHMLP
 import hypnettorch.utils.hnet_regularizer as hreg
@@ -17,10 +17,12 @@ from datetime import datetime
 from itertools import product
 from torchpercentile import Percentile
 from copy import deepcopy
+from retry import retry
 
 from datasets import (
     set_hyperparameters,
     prepare_split_cifar100_tasks,
+    prepare_split_cifar100_tasks_aka_FeCAM,
     prepare_permuted_mnist_tasks,
     prepare_split_mnist_tasks,
     prepare_tinyimagenet_tasks,
@@ -52,13 +54,16 @@ def append_row_to_file(filename, elements):
         filename += ".csv"
     filename = filename.replace(".pt", "")
     with open(filename, "a+") as stream:
-        np.savetxt(stream, np.array(elements)[np.newaxis], delimiter=";", fmt="%s")
+        np.savetxt(
+            stream, np.array(elements)[np.newaxis], delimiter=";", fmt="%s"
+        )
 
 
 def write_pickle_file(filename, object_to_save):
     torch.save(object_to_save, f"{filename}.pt")
 
 
+@retry((OSError, IOError))
 def load_pickle_file(filename):
     return torch.load(filename)
 
@@ -81,7 +86,9 @@ def get_shapes_of_network(model):
     return shapes_of_model
 
 
-def calculate_current_threshold(current_iteration, max_sparsity, no_of_last_iteration):
+def calculate_current_threshold(
+    current_iteration, max_sparsity, no_of_last_iteration
+):
     """
     Change the value of sparsity according to the current number
     of iteration, the number of iteration for which sparsity
@@ -99,7 +106,9 @@ def calculate_current_threshold(current_iteration, max_sparsity, no_of_last_iter
         return current_sparsity
 
 
-def calculate_number_of_iterations(number_of_samples, batch_size, number_of_epochs):
+def calculate_number_of_iterations(
+    number_of_samples, batch_size, number_of_epochs
+):
     """
     Calculate the total number of iterations based on the number
     of samples, desired batch size and number of training epochs.
@@ -144,7 +153,9 @@ def get_number_of_batch_normalization_layer(target_network):
     return num_of_batch_norm_layers
 
 
-def calculate_accuracy(data, target_network, weights, parameters, evaluation_dataset):
+def calculate_accuracy(
+    data, target_network, weights, parameters, evaluation_dataset
+):
     """
     Calculate accuracy for a given dataset using a selected network
     and a selected set of weights
@@ -174,7 +185,8 @@ def calculate_accuracy(data, target_network, weights, parameters, evaluation_dat
        torch.Tensor defining an accuracy for the selected setting
     """
     assert (
-        parameters["use_batch_norm_memory"] and parameters["number_of_task"] is not None
+        parameters["use_batch_norm_memory"]
+        and parameters["number_of_task"] is not None
     ) or not parameters["use_batch_norm_memory"]
     assert evaluation_dataset in ["validation", "test"]
     target_network.eval()
@@ -196,7 +208,9 @@ def calculate_accuracy(data, target_network, weights, parameters, evaluation_dat
 
         if parameters["use_batch_norm_memory"]:
             logits = target_network.forward(
-                test_input, weights=weights, condition=parameters["number_of_task"]
+                test_input,
+                weights=weights,
+                condition=parameters["number_of_task"],
             )
         else:
             logits = target_network.forward(test_input, weights=weights)
@@ -234,13 +248,17 @@ def prepare_network_sparsity(weights, threshold, verbose=False):
     for i in range(len(weights)):
         revalued_layer = torch.abs(torch.tanh(weights[i]))
         if i < (len(weights) - 1):
-            percentile_value = Percentile()(revalued_layer.flatten(), [threshold])
+            percentile_value = Percentile()(
+                revalued_layer.flatten(), [threshold]
+            )
             assert type(percentile_value.item()) == float
             zeros_weights = torch.zeros(
                 revalued_layer.shape, device=revalued_layer.device
             )
             mask = torch.where(
-                revalued_layer >= percentile_value, revalued_layer, zeros_weights
+                revalued_layer >= percentile_value,
+                revalued_layer,
+                zeros_weights,
             )
             masks.append(mask)
         else:
@@ -259,7 +277,9 @@ def unittest_prepare_network_sparsity():
     """
     test_list_of_tensors = [
         torch.Tensor([[0.1, 0.2, -0.1, -0.2, 0.03], [1, -1, 0.0, 0.45, -0.02]]),
-        torch.Tensor([[0.1, 0.2, 0.3, -0.5, 0.6], [0.01, -0.01, 0.5, 0.08, 0.11]]),
+        torch.Tensor(
+            [[0.1, 0.2, 0.3, -0.5, 0.6], [0.01, -0.01, 0.5, 0.08, 0.11]]
+        ),
     ]
     sparsity = 70
     test_output = prepare_network_sparsity(test_list_of_tensors, sparsity)
@@ -282,7 +302,9 @@ def unittest_prepare_network_sparsity():
     print("Unittest passed!")
 
 
-def apply_mask_to_weights_of_network(target_network, masks):
+def apply_mask_to_weights_of_network(
+    target_network, masks, num_of_batch_norm_layers=None
+):
     """
     Multiply each weight of the *target_network* by the value
     defined in the *masks* list
@@ -294,12 +316,19 @@ def apply_mask_to_weights_of_network(target_network, masks):
                          network in tandem with a hypernetwork
        *masks*: list of torch.Tensor objects containing values
                 of masks for the target network
+       *num_of_batch_norm_layers*: optional int, the number of batch normalization
+                                   layers in the target network; in some cases
+                                   its calculation may be not possible, therefore
+                                   it needs to be given as an external argument
 
     Returns:
     --------
        A modified weights of the target network
     """
-    num_of_batch_norm_layers = get_number_of_batch_normalization_layer(target_network)
+    if num_of_batch_norm_layers is None:
+        num_of_batch_norm_layers = get_number_of_batch_normalization_layer(
+            target_network
+        )
     if "weights" in dir(target_network):
         target_network_weights = target_network.weights
     else:
@@ -325,7 +354,9 @@ def apply_mask_to_weights_of_network(target_network, masks):
     for no_of_layer in range(len(masks)):
         assert (
             masks[no_of_layer].shape
-            == target_network_weights[no_of_layer + num_of_batch_norm_layers].shape
+            == target_network_weights[
+                no_of_layer + num_of_batch_norm_layers
+            ].shape
         )
         if no_of_layer == len(masks) - 1:
             masked_weights.append(
@@ -390,16 +421,22 @@ def evaluate_previous_tasks(
     hypernetwork.eval()
     target_network.eval()
     for task in range(parameters["number_of_task"] + 1):
-        # Target entropy calculation should be included here: hypernetwork has to be inferred
-        # for each task (together with the target network) and the task_id with the lowest entropy
-        # has to be chosen
-        # Arguments of the function: list of permutations, hypernetwork, sparsity, target network
+        # Target entropy calculation should be included here: hypernetwork
+        # has to be inferred for each task (together with the target network)
+        # and the task_id with the lowest entropy has to be chosen
+        # Arguments of the function: list of permutations, hypernetwork,
+        # sparsity, target network
         # output: task id
         currently_tested_task = list_of_permutations[task]
         # Generate weights of the target network
         hypernetwork_weights = hypernetwork.forward(cond_id=task)
-        masks = prepare_network_sparsity(hypernetwork_weights, sparsity_parameter)
-        target_weights = apply_mask_to_weights_of_network(target_network, masks)
+        masks = prepare_network_sparsity(
+            hypernetwork_weights, sparsity_parameter
+        )
+        target_weights = apply_mask_to_weights_of_network(
+            target_network,
+            masks
+        )
         accuracy = calculate_accuracy(
             currently_tested_task,
             target_network,
@@ -513,7 +550,9 @@ def train_single_task(
         best_target_network = deepcopy(target_network)
         best_val_accuracy = 0.0
     elif parameters["best_model_selection_method"] != "last_model":
-        raise ValueError("Wrong value of best_model_selection_method parameter!")
+        raise ValueError(
+            "Wrong value of best_model_selection_method parameter!"
+        )
     # Compute targets for the regularization part of loss before starting
     # the training of a current task
     hypernetwork.train()
@@ -529,7 +568,9 @@ def train_single_task(
     else:
         previous_target_weights = None
 
-    if (parameters["target_network"] == "ResNet") and parameters["use_batch_norm"]:
+    if (parameters["target_network"] == "ResNet") and parameters[
+        "use_batch_norm"
+    ]:
         use_batch_norm_memory = True
     else:
         use_batch_norm_memory = False
@@ -558,6 +599,8 @@ def train_single_task(
                 verbose=True,
             )
     for iteration in range(parameters["number_of_iterations"]):
+        # hypernetwork.train()
+        # target_network.train()
         current_batch = current_dataset_instance.next_train_batch(
             parameters["batch_size"]
         )
@@ -580,7 +623,9 @@ def train_single_task(
                 parameters["sparsity_parameter"],
                 parameters["number_of_iterations"],
             )
-        masks = prepare_network_sparsity(hnet_weights, current_sparsity_parameter)
+        masks = prepare_network_sparsity(
+            hnet_weights, current_sparsity_parameter
+        )
         loss_norm_target_regularizer = 0.0
         if current_no_of_task > 0:
             # Add another regularizer for weights, e.g. according
@@ -609,7 +654,9 @@ def train_single_task(
                     )
                 else:
                     loss_norm_target_regularizer += torch.norm(
-                        target_network.weights[no_of_layer + no_of_batch_norm_layers]
+                        target_network.weights[
+                            no_of_layer + no_of_batch_norm_layers
+                        ]
                         - previous_target_weights[
                             no_of_layer + no_of_batch_norm_layers
                         ],
@@ -619,7 +666,9 @@ def train_single_task(
         # Even if batch normalization layers are applied, statistics
         # for the last saved tasks will be applied so there is no need to
         # give 'current_no_of_task' as a value for the 'condition' argument.
-        prediction = target_network.forward(tensor_input, weights=target_weights)
+        prediction = target_network.forward(
+            tensor_input, weights=target_weights
+        )
         loss_current_task = criterion(prediction, gt_output)
         loss_regularization = 0.0
         if current_no_of_task > 0:
@@ -640,7 +689,9 @@ def train_single_task(
         )
         loss = (
             loss_current_task
-            + parameters["beta"] * loss_regularization / max(1, current_no_of_task)
+            + parameters["beta"]
+            * loss_regularization
+            / max(1, current_no_of_task)
             + parameters["lambda"] * loss_norm_target_regularizer
         )
         loss.backward()
@@ -684,8 +735,12 @@ def train_single_task(
                     best_hypernetwork = deepcopy(hypernetwork)
                     best_target_network = deepcopy(target_network)
             if parameters["save_masks"]:
-                filename = f"mask_task_{current_no_of_task}_" f"iteration_{iteration}_"
-                write_pickle_file(f'{parameters["saving_folder"]}/{filename}', masks)
+                filename = (
+                    f"mask_task_{current_no_of_task}_" f"iteration_{iteration}_"
+                )
+                write_pickle_file(
+                    f'{parameters["saving_folder"]}/{filename}', masks
+                )
             if (
                 parameters["number_of_epochs"] is not None
                 and parameters["lr_scheduler"]
@@ -700,7 +755,9 @@ def train_single_task(
         return hypernetwork, target_network
 
 
-def build_multiple_task_experiment(dataset_list_of_tasks, parameters, use_chunks=False):
+def build_multiple_task_experiment(
+    dataset_list_of_tasks, parameters, use_chunks=False
+):
     """
     Create a continual learning experiment with multiple tasks
     for a given dataset.
@@ -725,7 +782,9 @@ def build_multiple_task_experiment(dataset_list_of_tasks, parameters, use_chunks
       *dataframe*: (Pandas Dataframe) contains results from consecutive
                    evaluations for all previous tasks
     """
-    output_shape = list(dataset_list_of_tasks[0].get_train_outputs())[0].shape[0]
+    output_shape = list(dataset_list_of_tasks[0].get_train_outputs())[0].shape[
+        0
+    ]
     # Create a target network which will be multilayer perceptron
     # or ResNet/ZenkeNet with internal weights
     if parameters["target_network"] == "MLP":
@@ -748,14 +807,22 @@ def build_multiple_task_experiment(dataset_list_of_tasks, parameters, use_chunks
             bn_track_stats=False,
         ).to(parameters["device"])
     elif parameters["target_network"] == "ZenkeNet":
+        if parameters["dataset"] in ["CIFAR100", "CIFAR100_FeCAM_setup"]:
+            architecture = "cifar"
+        elif parameters["dataset"] == "TinyImageNet":
+            architecture = "tiny"
+        else:
+            raise ValueError("This dataset is currently not implemented!")
         target_network = ZenkeNet(
             in_shape=(parameters["input_shape"], parameters["input_shape"], 3),
             num_classes=output_shape,
-            arch="cifar",
+            arch=architecture,
             no_weights=False,
         ).to(parameters["device"])
     # Create a hypernetwork based on the shape of the target network
-    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(target_network)
+    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(
+        target_network
+    )
     if not use_chunks:
         hypernetwork = HMLP(
             target_network.param_shapes[no_of_batch_norm_layers:],
@@ -781,7 +848,9 @@ def build_multiple_task_experiment(dataset_list_of_tasks, parameters, use_chunks
         columns=["after_learning_of_task", "tested_task", "accuracy"]
     )
 
-    if (parameters["target_network"] == "ResNet") and parameters["use_batch_norm"]:
+    if (parameters["target_network"] == "ResNet") and parameters[
+        "use_batch_norm"
+    ]:
         use_batch_norm_memory = True
     else:
         use_batch_norm_memory = False
@@ -832,7 +901,7 @@ def build_multiple_task_experiment(dataset_list_of_tasks, parameters, use_chunks
     return hypernetwork, target_network, dataframe
 
 
-def main_running_experiments(path_to_datasets, parameters, dataset):
+def main_running_experiments(path_to_datasets, parameters):
     """
     Perform a series of experiments based on the hyperparameters.
 
@@ -840,13 +909,11 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
     ----------
       *path_to_datasets*: (str) path to files with datasets
       *parameters*: (dict) contains multiple experiment hyperparameters
-      *dataset*: (str) dataset for calculation: PermutedMNIST,
-                 CIFAR100, TinyImageNet or SplitMNIST
 
     Returns learned hypernetwork, target network and a dataframe
     with single results.
     """
-    if dataset == "PermutedMNIST":
+    if parameters["dataset"] == "PermutedMNIST":
         dataset_tasks_list = prepare_permuted_mnist_tasks(
             path_to_datasets,
             parameters["input_shape"],
@@ -854,25 +921,34 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
             parameters["padding"],
             parameters["no_of_validation_samples"],
         )
-    elif dataset == "CIFAR100":
+    elif parameters["dataset"] == "CIFAR100":
         dataset_tasks_list = prepare_split_cifar100_tasks(
             path_to_datasets,
             validation_size=parameters["no_of_validation_samples"],
             use_augmentation=parameters["augmentation"],
         )
-    elif dataset == "SplitMNIST":
+    elif parameters["dataset"] == "SplitMNIST":
         dataset_tasks_list = prepare_split_mnist_tasks(
             path_to_datasets,
             validation_size=parameters["no_of_validation_samples"],
             use_augmentation=parameters["augmentation"],
             number_of_tasks=parameters["number_of_tasks"],
         )
-    elif dataset == 'TinyImageNet':
+    elif parameters["dataset"] == "TinyImageNet":
         dataset_tasks_list = prepare_tinyimagenet_tasks(
             path_to_datasets,
             seed=parameters["seed"],
             validation_size=parameters["no_of_validation_samples"],
-            number_of_tasks=parameters["number_of_tasks"]
+            number_of_tasks=parameters["number_of_tasks"],
+        )
+    elif parameters["dataset"] == "CIFAR100_FeCAM_setup":
+        dataset_tasks_list = prepare_split_cifar100_tasks_aka_FeCAM(
+            path_to_datasets,
+            number_of_tasks=parameters["number_of_tasks"],
+            no_of_validation_samples_per_class=parameters[
+                "no_of_validation_samples_per_class"
+            ],
+            use_augmentation=parameters["augmentation"],
         )
     else:
         raise ValueError("Wrong name of the dataset!")
@@ -882,9 +958,9 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
     )
     # Calculate statistics of grid search results
     no_of_last_task = parameters["number_of_tasks"] - 1
-    accuracies = dataframe.loc[dataframe["after_learning_of_task"] == no_of_last_task][
-        "accuracy"
-    ].values
+    accuracies = dataframe.loc[
+        dataframe["after_learning_of_task"] == no_of_last_task
+    ]["accuracy"].values
     row_with_results = (
         f"{dataset_tasks_list[0].get_identifier()};"
         f'{parameters["augmentation"]};'
@@ -912,7 +988,8 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
     )
 
     load_path = (
-        f'{parameters["saving_folder"]}/' f'results_{parameters["name_suffix"]}.csv'
+        f'{parameters["saving_folder"]}/'
+        f'results_{parameters["name_suffix"]}.csv'
     )
     plot_heatmap(load_path)
     return hypernetwork, target_network, dataframe
@@ -921,9 +998,10 @@ def main_running_experiments(path_to_datasets, parameters, dataset):
 if __name__ == "__main__":
     unittest_prepare_network_sparsity()
     path_to_datasets = "./Data"
-    # Options: 'PermutedMNIST', 'CIFAR100', 'SplitMNIST', 'TinyImageNet'
     dataset = "TinyImageNet"
-    part = 0
+    # 'PermutedMNIST', 'CIFAR100', 'SplitMNIST', 'TinyImageNet',
+    # 'CIFAR100_FeCAM_setup'
+    part = 1
     create_grid_search = False
     if create_grid_search:
         summary_results_filename = "grid_search_results"
@@ -940,7 +1018,8 @@ if __name__ == "__main__":
         "sparsity;norm;lambda;mean_accuracy;std_accuracy"
     )
     append_row_to_file(
-        f'{hyperparameters["saving_folder"]}{summary_results_filename}.csv', header
+        f'{hyperparameters["saving_folder"]}{summary_results_filename}.csv',
+        header,
     )
 
     for no, elements in enumerate(
@@ -972,6 +1051,7 @@ if __name__ == "__main__":
             "input_shape": hyperparameters["shape"],
             "augmentation": hyperparameters["augmentation"],
             "number_of_tasks": hyperparameters["number_of_tasks"],
+            "dataset": dataset,
             "seed": seed,
             "hypernetwork_hidden_layers": hypernetwork_hidden_layers,
             "activation_function": hyperparameters["activation_function"],
@@ -995,7 +1075,9 @@ if __name__ == "__main__":
             "batch_size": batch_size,
             "number_of_epochs": hyperparameters["number_of_epochs"],
             "number_of_iterations": hyperparameters["number_of_iterations"],
-            "no_of_validation_samples": hyperparameters["no_of_validation_samples"],
+            "no_of_validation_samples_per_class": hyperparameters[
+                "no_of_validation_samples_per_class"
+            ],
             "embedding_size": embedding_size,
             "norm": hyperparameters["norm"],
             "lambda": lambda_par,
@@ -1011,6 +1093,10 @@ if __name__ == "__main__":
             "name_suffix": f"mask_sparsity_{sparsity_parameter}",
             "summary_results_filename": summary_results_filename,
         }
+        if "no_of_validation_samples" in hyperparameters:
+            parameters["no_of_validation_samples"] = hyperparameters[
+                "no_of_validation_samples"
+            ]
 
         os.makedirs(parameters["saving_folder"], exist_ok=True)
         # start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1025,5 +1111,5 @@ if __name__ == "__main__":
             set_seed(seed)
 
         hypernetwork, target_network, dataframe = main_running_experiments(
-            path_to_datasets, parameters, dataset
+            path_to_datasets, parameters
         )

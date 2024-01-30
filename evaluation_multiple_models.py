@@ -29,10 +29,15 @@ def prepare_dataframe_for_multiple_hyperparams_sets(
     """
     dataframes = []
     for hyperparams, model_runs, model_name, cur_suffix in zip(
-        selected_hyperparams_models, numbers_of_models, names_of_settings, suffixes
+        selected_hyperparams_models,
+        numbers_of_models,
+        names_of_settings,
+        suffixes,
     ):
         for model in model_runs:
-            dataframe = pd.read_csv(f"{hyperparams}{model}/{cur_suffix}", sep=";")
+            dataframe = pd.read_csv(
+                f"{hyperparams}{model}/{cur_suffix}", sep=";"
+            )
             dataframe = dataframe.loc[
                 dataframe["after_learning_of_task"] == (number_of_tasks - 1)
             ][["tested_task", "accuracy"]]
@@ -103,7 +108,11 @@ def plot_different_setups_consecutive_tasks(
     )
     if dataset_name == "Permuted MNIST":
         sns.move_legend(
-            ax, "upper right", bbox_to_anchor=(0.61, 0.96), fontsize=fontsize, title=""
+            ax,
+            "upper right",
+            bbox_to_anchor=(0.61, 0.96),
+            fontsize=fontsize,
+            title="",
         )
         plt.title(f"Results for different hyperparameters for {dataset_name}")
     elif dataset_name == "Split MNIST":
@@ -165,7 +174,9 @@ def plot_mean_accuracy_for_CL_tasks_matrix(
         dataframes.append(dataframe)
     merged_dataframe = (
         pd.concat(dataframes)
-        .groupby(["after_learning_of_task", "tested_task"], as_index=False)["accuracy"]
+        .groupby(["after_learning_of_task", "tested_task"], as_index=False)[
+            "accuracy"
+        ]
         .agg(list)
     )
     merged_dataframe["mean_accuracy"] = [
@@ -186,7 +197,11 @@ def plot_mean_accuracy_for_CL_tasks_matrix(
     else:
         raise ValueError("Wrong value of version argument!")
     p = sns.heatmap(
-        table, annot=True, fmt=".1f", linewidth=0.2, annot_kws={"size": size_kws}
+        table,
+        annot=True,
+        fmt=".1f",
+        linewidth=0.2,
+        annot_kws={"size": size_kws},
     )
     plt.xlabel("Number of the tested task")
     plt.ylabel("Number of the previously learned task")
@@ -217,13 +232,14 @@ def plot_mean_accuracy_for_CL_tasks_matrix(
 
 if __name__ == "__main__":
     # Different sets of hyperparameters - Permuted MNIST
+    # Exemplary analysis - one should create similar code for own experiments
     plot_path = "./Plots"
-    main_path_for_models = "./"
+    main_path_for_models = "./Models/"
     selected_hyperparams_models = [
-        f"{main_path_for_models}10_tasks_final_models/ICLR_models/",  # 0-4
-        f"{main_path_for_models}grid_search/last_model/",  # 0-4
-        f"{main_path_for_models}grid_search/last_model/",  # 5-9
-        f"{main_path_for_models}grid_search/last_model/part_3/",  # 0-4
+        f"{main_path_for_models}grid_search_1/",  # 0-4
+        f"{main_path_for_models}grid_search_2/",  # 0-4
+        f"{main_path_for_models}grid_search_3/",  # 5-9
+        f"{main_path_for_models}grid_search_4/",  # 0-4
     ]
     names_of_settings = [
         r"$\beta = 0.0005, \lambda = 0.001$, masked $L_1$, $p = 0$",
@@ -376,7 +392,13 @@ if __name__ == "__main__":
     ]
     number_of_tasks = 5
     dataset_name = "Split MNIST"
-    for cur_set_of_models, cur_settings, cur_numbers, cur_suffixes, cur_name in zip(
+    for (
+        cur_set_of_models,
+        cur_settings,
+        cur_numbers,
+        cur_suffixes,
+        cur_name,
+    ) in zip(
         selected_hyperparams_models,
         names_of_settings,
         numbers_of_models,

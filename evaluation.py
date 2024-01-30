@@ -2,6 +2,7 @@ from datasets import (
     set_hyperparameters,
     prepare_permuted_mnist_tasks,
     prepare_split_cifar100_tasks,
+    prepare_split_cifar100_tasks_aka_FeCAM,
     prepare_split_mnist_tasks,
 )
 from main import (
@@ -15,7 +16,9 @@ from main import (
 from hypnettorch.mnets import MLP
 from hypnettorch.hnets import HMLP
 from hypnettorch.mnets.resnet import ResNet
-from hypnettorch.mnets.zenkenet import ZenkeNet
+from ResNetF import ResNetF
+from MLP_F import MLPFeCAM
+from ZenkeNet64 import ZenkeNet
 from copy import deepcopy
 import pandas as pd
 import numpy as np
@@ -50,11 +53,30 @@ def load_dataset(dataset, path_to_datasets, hyperparameters):
             use_augmentation=hyperparameters["augmentation"],
             number_of_tasks=hyperparameters["number_of_tasks"],
         )
+    elif dataset == "CIFAR100_FeCAM_setup":
+        return prepare_split_cifar100_tasks_aka_FeCAM(
+            path_to_datasets,
+            number_of_tasks=hyperparameters["number_of_tasks"],
+            no_of_validation_samples_per_class=hyperparameters[
+                "no_of_validation_samples_per_class"
+            ],
+            use_augmentation=hyperparameters["augmentation"],
+        )
+    else:
+        raise ValueError("This dataset is currently not handled!")
 
 
 def prepare_target_network(hyperparameters, output_shape):
     if hyperparameters["target_network"] == "MLP":
         target_network = MLP(
+            n_in=hyperparameters["shape"],
+            n_out=output_shape,
+            hidden_layers=hyperparameters["target_hidden_layers"],
+            use_bias=hyperparameters["use_bias"],
+            no_weights=False,
+        ).to(hyperparameters["device"])
+    elif hyperparameters["target_network"] == "MLP_FeCAM":
+        target_network = MLPFeCAM(
             n_in=hyperparameters["shape"],
             n_out=output_shape,
             hidden_layers=hyperparameters["target_hidden_layers"],
@@ -72,16 +94,140 @@ def prepare_target_network(hyperparameters, output_shape):
             use_batch_norm=hyperparameters["use_batch_norm"],
             bn_track_stats=False,
         ).to(hyperparameters["device"])
+    elif hyperparameters["target_network"] == "ResNetF":
+        target_network = ResNetF(
+            in_shape=(hyperparameters["shape"], hyperparameters["shape"], 3),
+            num_classes=output_shape,
+            use_bias=hyperparameters["use_bias"],
+            n=hyperparameters["resnet_number_of_layer_groups"],
+            k=hyperparameters["resnet_widening_factor"],
+            no_weights=False,
+            use_batch_norm=hyperparameters["use_batch_norm"],
+            bn_track_stats=False,
+        ).to(hyperparameters["device"])
     elif hyperparameters["target_network"] == "ZenkeNet":
+        if hyperparameters["dataset"] in ["CIFAR100", "CIFAR100_FeCAM_setup"]:
+            architecture = "cifar"
+        elif hyperparameters["dataset"] == "TinyImageNet":
+            architecture = "tiny"
+        else:
+            raise ValueError("This dataset is currently not implemented!")
         target_network = ZenkeNet(
             in_shape=(hyperparameters["shape"], hyperparameters["shape"], 3),
             num_classes=output_shape,
-            arch="cifar",
+            arch=architecture,
             no_weights=False,
         ).to(hyperparameters["device"])
     else:
         raise NotImplementedError
     return target_network
+
+
+def prepare_and_load_weights_for_models(
+    path_to_stored_networks,
+    path_to_datasets,
+    number_of_model,
+    dataset,
+    seed,
+    part=0,
+    fecam_validation=False,
+):
+    """
+    Prepare hypernetwork and target network and load stored weights
+    for both models. Also, load experiment hyperparameters.
+
+    Arguments:
+    ----------
+       *path_to_stored_networks*: (string) path for all models
+                                  located in subfolders
+       *number_of_model*: (int) a number of the currently loaded model
+       *dataset*: (string) the name of the currently analyzed dataset,
+                           one of the followings: 'PermutedMNIST',
+                           'SplitMNIST', 'CIFAR100' or 'CIFAR100_FeCAM_setup'
+       *seed*: (int) defines a seed value for deterministic calculations
+       *part*: (optional int) important for CIFAR100: [0 for ResNet,
+               1 for ZenkeNet] and for CIFAR100_FeCAM_setup [0 for ResNet
+               with 5 tasks, 1 for ResNet with 10 tasks, 2 for ResNet with
+               20 tasks, 3 for ZenkeNet with 5 tasks, 4 for ZenkeNet with
+               10 tasks, 5 for ZenkeNet with 20 tasks]
+       *fecam_validation*: (optional Boolean) if True, the validation set would
+                           have 0 elements because FeCAM uses all training samples;
+                           by default it is False. Also, another target network
+                           has to be loaded
+
+    Returns a dictionary with the following keys:
+       *hypernetwork*: an instance of HMLP class
+       *hypernetwork_weights*: loaded weights for the hypernetwork
+       *target_network*: an instance of MLP or ResNet class
+       *target_network_weights*: loaded weights for the target network
+       *hyperparameters*: a dictionary with experiment's hyperparameters
+    """
+    assert dataset in [
+        "PermutedMNIST",
+        "CIFAR100",
+        "SplitMNIST",
+        "CIFAR100_FeCAM_setup",
+    ]
+    path_to_model = f"{path_to_stored_networks}{number_of_model}/"
+    hyperparameters = set_hyperparameters(dataset, grid_search=False, part=part)
+    if fecam_validation:
+        hyperparameters["no_of_validation_samples_per_class"] = 0
+        if dataset == "CIFAR100_FeCAM_setup":
+            hyperparameters["target_network"] = "ResNetF"
+        elif dataset in ["PermutedMNIST", "SplitMNIST"]:
+            hyperparameters["target_network"] = "MLP_FeCAM"
+    set_seed(seed)
+    # Load proper dataset
+    dataset_tasks_list = load_dataset(
+        dataset, path_to_datasets, hyperparameters
+    )
+    output_shape = list(dataset_tasks_list[0].get_train_outputs())[0].shape[0]
+
+    # Build target network
+    target_network = prepare_target_network(hyperparameters, output_shape)
+    # Build hypernetwork
+    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(
+        target_network
+    )
+    if not hyperparameters["use_chunks"]:
+        hypernetwork = HMLP(
+            target_network.param_shapes[no_of_batch_norm_layers:],
+            uncond_in_size=0,
+            cond_in_size=hyperparameters["embedding_sizes"][0],
+            activation_fn=hyperparameters["activation_function"],
+            layers=hyperparameters["hypernetworks_hidden_layers"][0],
+            num_cond_embs=hyperparameters["number_of_tasks"],
+        ).to(hyperparameters["device"])
+    else:
+        raise NotImplementedError
+    # Load weights
+    hnet_weights = load_pickle_file(
+        f"{path_to_model}hypernetwork_"
+        f'after_{hyperparameters["number_of_tasks"] - 1}_task.pt'
+    )
+    target_weights_before_masking = load_pickle_file(
+        f"{path_to_model}target_network_after_"
+        f'{hyperparameters["number_of_tasks"] - 1}_task.pt'
+    )
+    # Check whether the number of target weights is exactly the same like
+    # the loaded weights
+    for prepared, loaded in zip(
+        [hypernetwork, target_network],
+        [hnet_weights, target_weights_before_masking],
+    ):
+        no_of_loaded_weights = 0
+        for item in loaded:
+            no_of_loaded_weights += item.shape.numel()
+        assert prepared.num_params == no_of_loaded_weights
+    return {
+        "list_of_CL_tasks": dataset_tasks_list,
+        "hypernetwork": hypernetwork,
+        "hypernetwork_weights": hnet_weights,
+        "target_network": target_network,
+        "target_network_weights": target_weights_before_masking,
+        "no_of_batch_norm_layers": no_of_batch_norm_layers,
+        "hyperparameters": hyperparameters,
+    }
 
 
 def calculate_hypernetwork_output(
@@ -92,7 +238,9 @@ def calculate_hypernetwork_output(
     no_of_task_for_evaluation,
     forward_transfer=False,
 ):
-    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(target_network)
+    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(
+        target_network
+    )
     if not hyperparameters["use_chunks"]:
         hypernetwork = HMLP(
             target_network.param_shapes[no_of_batch_norm_layers:],
@@ -148,7 +296,9 @@ def load_and_evaluate_networks(
     if seed is not None:
         set_seed(seed)
     # Load proper dataset
-    dataset_tasks_list = load_dataset(dataset, path_to_datasets, hyperparameters)
+    dataset_tasks_list = load_dataset(
+        dataset, path_to_datasets, hyperparameters
+    )
 
     # Build target network
     output_shape = list(dataset_tasks_list[0].get_train_outputs())[0].shape[0]
@@ -167,7 +317,10 @@ def load_and_evaluate_networks(
         else:
             forward_transfer = False
         # Build hypernetwork
-        random_hypernetwork_output, hypernetwork_output = calculate_hypernetwork_output(
+        (
+            random_hypernetwork_output,
+            hypernetwork_output,
+        ) = calculate_hypernetwork_output(
             target_network,
             hyperparameters,
             path_to_stored_networks,
@@ -183,12 +336,16 @@ def load_and_evaluate_networks(
         random_masks = prepare_network_sparsity(
             random_hypernetwork_output, hyperparameters["sparsity_parameters"]
         )
-        random_weights = apply_mask_to_weights_of_network(random_model, random_masks)
+        random_weights = apply_mask_to_weights_of_network(
+            random_model, random_masks
+        )
         # Load and prepare target network
         loaded_target_model = load_pickle_file(
             f"{path_to_stored_networks}target_network_after_{loading_task}_task.pt"
         )
-        target_weights = apply_mask_to_weights_of_network(loaded_target_model, masks)
+        target_weights = apply_mask_to_weights_of_network(
+            loaded_target_model, masks
+        )
 
         # During testing a random network on the i-th task we have to compare
         # it with the network trained on the (i-1)-th task
@@ -210,7 +367,9 @@ def load_and_evaluate_networks(
                 (target_weights, random_weights),
             )
         )
-        results.append([loading_task, evaluation_task, accuracies[0], accuracies[1]])
+        results.append(
+            [loading_task, evaluation_task, accuracies[0], accuracies[1]]
+        )
     dataframe = pd.DataFrame(
         results,
         columns=[
@@ -271,10 +430,13 @@ def calculate_forward_transfer(dataframe):
     number_of_tasks = int(dataframe.max()["loaded_task"] + 1)
     for i in range(1, number_of_tasks):
         extracted_result = dataframe.loc[
-            (dataframe["loaded_task"] == (i - 1)) & (dataframe["evaluated_task"] == i)
+            (dataframe["loaded_task"] == (i - 1))
+            & (dataframe["evaluated_task"] == i)
         ]
         trained_on_previous_task = extracted_result["loaded_accuracy"].values[0]
-        random_network_result = extracted_result["random_net_accuracy"].values[0]
+        random_network_result = extracted_result["random_net_accuracy"].values[
+            0
+        ]
         forward_transfer += trained_on_previous_task - random_network_result
     forward_transfer /= number_of_tasks - 1
     return forward_transfer
@@ -321,14 +483,22 @@ def evaluate_target_network(
        *condition* (optional int) the number of the currently tested task
                    for batch normalization
 
-    Returns logits
+    Returns logits or logits and features (in case of ResNetF)
     """
     if target_network_type == "ResNet":
         assert condition is not None
     if target_network_type == "ResNet":
+        # Only ResNet needs information about the currently tested task
         return target_network.forward(
             network_input, weights=weights, condition=condition
         )
+    elif target_network_type == "ResNetF":
+        # ResNetF returns not only the logits values but also features
+        # representation
+        logits, features = target_network.forward(
+            network_input, weights=weights, condition=condition
+        )
+        return logits, features
     else:
         return target_network.forward(network_input, weights=weights)
 
@@ -354,7 +524,9 @@ def get_network_logits_for_all_inputs_all_tasks(
     if seed is not None:
         set_seed(seed)
     # Load proper dataset
-    dataset_tasks_list = load_dataset(dataset, path_to_datasets, hyperparameters)
+    dataset_tasks_list = load_dataset(
+        dataset, path_to_datasets, hyperparameters
+    )
     output_shape = list(dataset_tasks_list[0].get_train_outputs())[0].shape[0]
     results_masked, results_without_masks, gt_tasks = (
         defaultdict(list),
@@ -365,7 +537,9 @@ def get_network_logits_for_all_inputs_all_tasks(
     # Build target network
     target_network = prepare_target_network(hyperparameters, output_shape)
     # Build hypernetwork
-    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(target_network)
+    no_of_batch_norm_layers = get_number_of_batch_normalization_layer(
+        target_network
+    )
     if not hyperparameters["use_chunks"]:
         hypernetwork = HMLP(
             target_network.param_shapes[no_of_batch_norm_layers:],
@@ -384,7 +558,9 @@ def get_network_logits_for_all_inputs_all_tasks(
     )
     for task in range(hyperparameters["number_of_tasks"]):
         target_loaded_weights = deepcopy(target_weights_without_masking)
-        hypernetwork_output = hypernetwork.forward(cond_id=task, weights=hnet_weights)
+        hypernetwork_output = hypernetwork.forward(
+            cond_id=task, weights=hnet_weights
+        )
         masks = prepare_network_sparsity(
             hypernetwork_output, hyperparameters["sparsity_parameters"]
         )
@@ -453,7 +629,9 @@ def get_network_logits_for_all_inputs_all_tasks(
     for cur_class in list(results_masked.keys()):
         gt_tasks_masked.extend([cur_class] * len(results_masked[cur_class]))
         extracted_features_masked.extend(results_masked[cur_class])
-        gt_tasks_pure.extend([cur_class] * len(results_without_masks[cur_class]))
+        gt_tasks_pure.extend(
+            [cur_class] * len(results_without_masks[cur_class])
+        )
         extracted_features_pure.extend(results_without_masks[cur_class])
         gt_tasks_general.extend(gt_tasks[cur_class])
     (
@@ -534,11 +712,15 @@ def plot_accuracy_one_setting(
     dataframe_after_all = pd.concat(
         individual_results_after_all, ignore_index=True, axis=0
     )
-    dataframe_after_all["after_learning_of_task"] = "after training of all tasks"
+    dataframe_after_all[
+        "after_learning_of_task"
+    ] = "after training of all tasks"
     dataframe = pd.concat(
         [dataframe_just_after, dataframe_after_all], axis=0, ignore_index=True
     )
-    dataframe = dataframe.rename(columns={"after_learning_of_task": "evaluation"})
+    dataframe = dataframe.rename(
+        columns={"after_learning_of_task": "evaluation"}
+    )
     dataframe["tested_task"] += 1
     tasks = individual_results_just_after[0]["tested_task"].values + 1
     ax = sns.relplot(
@@ -594,7 +776,110 @@ def plot_accuracy_one_setting(
     plt.close()
 
 
-def prepare_tSNE_plot(features, gt_classes, name, dataset, label="task", title=None):
+def plot_single_model_accuracy_one_setting(
+    path_to_stored_networks,
+    no_of_models_for_loading,
+    suffix,
+    dataset_name,
+    folder="./Plots/",
+    legend=True,
+):
+    """
+    Plot accuracy just after training of consecutive tasks and after
+    training of all tasks for a single model of the selected method
+    for a given dataset.
+    This function is especially prepared for TinyImageNet
+
+    Arguments:
+    ----------
+       *path_to_stored_networks*: (string) path to the folder with results
+                                  for all models
+       *no_of_models_for_loading*: (list) contains names of subfolders
+                                   with consecutive models
+       *suffix*: (string) name of the file with results; single files
+                 are located in consecutive subfolders
+       *dataset_name*: (string) name of the currently analyzed dataset
+       *folder*: (optional string) name of the folder for saving results
+       *legend*: (optional Boolean value) defines whether a legend should
+                 be inserted
+    """
+    name_to_save = (
+        dataset_name.replace(" ", "_").replace("(", "").replace(")", "")
+    )
+    for model in no_of_models_for_loading:
+        accuracy_results = pd.read_csv(
+            f"{path_to_stored_networks}{model}/{suffix}", sep=";", index_col=0
+        )
+        just_after_training = accuracy_results.loc[
+            accuracy_results["after_learning_of_task"]
+            == accuracy_results["tested_task"]
+        ].copy()
+        just_after_training.reset_index(inplace=True, drop=True)
+        just_after_training.loc[
+            :, "after_learning_of_task"
+        ] = "just after training"
+
+        after_all_training_sessions = accuracy_results.loc[
+            accuracy_results["after_learning_of_task"]
+            == accuracy_results.max()["after_learning_of_task"]
+        ].copy()
+        after_all_training_sessions.reset_index(inplace=True, drop=True)
+        after_all_training_sessions.loc[
+            :, "after_learning_of_task"
+        ] = "after training of all tasks"
+        dataframe = pd.concat(
+            [just_after_training, after_all_training_sessions],
+            axis=0,
+            ignore_index=True,
+        )
+        dataframe = dataframe.rename(
+            columns={"after_learning_of_task": "evaluation"}
+        )
+        dataframe["tested_task"] += 1
+        if "ImageNet" in dataset_name:
+            tasks = [0, 4, 9, 14, 19, 24, 29, 34, 39]
+        else:
+            tasks = just_after_training["tested_task"].values + 1
+        values = dataframe["accuracy"].values
+        plt.figure(figsize=(5.5, 2.5))
+        ax = sns.barplot(
+            data=dataframe,
+            x="tested_task",
+            y="accuracy",
+            hue="evaluation",
+        )
+        ax.set(
+            xticks=tasks,
+            ylim=(np.min(values) - 3,
+                  np.max(values) + 3)
+        )
+        if legend:
+            sns.move_legend(
+                ax,
+                "upper left",
+                bbox_to_anchor=(0, 1.3),
+                fontsize=10,
+                ncol=2,
+                title="",
+            )
+        else:
+            ax._legend.remove()
+            plt.title(f"Results for {dataset_name}", fontsize=10, pad=20)
+        plt.xlabel("Number of task", fontsize=10)
+        plt.ylabel("Accuracy [%]", fontsize=10)
+        plt.tight_layout()
+        os.makedirs(folder, exist_ok=True)
+        plt.savefig(
+            f"{folder}accuracy_model_{model}_{name_to_save}.pdf",
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close()
+
+
+def prepare_tSNE_plot(
+    features, gt_classes, name, dataset, label="task", title=None
+):
     """
     Prepare a t-SNE plot to produce an embedded version of features.
 
@@ -696,22 +981,28 @@ if __name__ == "__main__":
     ###################################################################
     # PermutedMNIST / SplitMNIST, HNET:
     method = "HYPERMASK"  # 'HNET' or 'HYPERMASK'
-    dataset = "PermutedMNIST100"
+    dataset = "TinyImageNet_ZenkeNet"
     if dataset == "PermutedMNIST":
-        prefix = "P"
+        prefix = "PMNIST"
         number_of_runs = 5
     elif dataset == "SplitMNIST":
-        prefix = "split"
+        prefix = "splitMNIST"
         number_of_runs = 5
     elif dataset == "PermutedMNIST100":
-        prefix = "P100"
+        prefix = "P100MNIST"
         number_of_runs = 3
+    elif dataset == "TinyImageNet_ResNet":
+        prefix = "Tiny_ResNet"
+        number_of_runs = 5
+    elif dataset == "TinyImageNet_ZenkeNet":
+        prefix = "Tiny_ZenkeNet"
+        number_of_runs = 5
     path_to_transfer_calculations = "./transfer/"
     forward = False
     paths = []
     for seed in range(1, number_of_runs + 1):
         paths.append(
-            f"{path_to_transfer_calculations}{method}_seed_{seed}_{prefix}MNIST.csv"
+            f"{path_to_transfer_calculations}{method}_seed_{seed}_{prefix}.csv"
         )
     FWTs, BWTs = calculate_FWT_BWT_different_files(paths, forward=forward)
     ###################################################################
@@ -793,9 +1084,9 @@ if __name__ == "__main__":
             tasks_for_evaluation,
             seed=no_of_model + 1,
         )
-        results.to_csv(f"HYPERMASK_seed_{no_of_model + 1}_{dataset}.csv", sep=";")
-    # TODO: Remove memory in main in ResNet batchnorm
-    # TODO: Save PermutedMNIST datasets
+        results.to_csv(
+            f"HYPERMASK_seed_{no_of_model + 1}_{dataset}.csv", sep=";"
+        )
 
     ###################################################################
     # Prepare results for the best setting
@@ -811,11 +1102,11 @@ if __name__ == "__main__":
     no_of_models_for_loading = [0, 1, 2]
     suffix = "results_mask_sparsity_0.csv"
     dataset_name = "Permuted MNIST (100 tasks)"
-    # CIFAR, 100 tasks, ResNet
+    # CIFAR, 10 tasks, ResNet
     no_of_models_for_loading = [0, 1, 2, 3, 4]
     suffix = "results_mask_sparsity_0.csv"
     dataset_name = "CIFAR-100 (ResNet)"
-    # CIFAR, 100 tasks, ZenkeNet
+    # CIFAR, 10 tasks, ZenkeNet
     no_of_models_for_loading = [0, 1, 2, 3, 4]
     suffix = "results_mask_sparsity_0.csv"
     dataset_name = "CIFAR-100 (ZenkeNet)"
@@ -826,9 +1117,30 @@ if __name__ == "__main__":
         dataset_name,
         folder="./Plots/",
     )
+    # TinyImageNet, 40 tasks, ResNet
+    no_of_models_for_loading = [0, 1, 2, 3, 4]
+    suffix = "results_mask_sparsity_0.csv"
+    dataset_name = "Tiny ImageNet (ResNet)"
+    legend = True
+    # TinyImageNet, 40 tasks, ZenkeNet
+    no_of_models_for_loading = [0, 1, 2, 3, 4]
+    suffix = "results_mask_sparsity_50.csv"
+    dataset_name = "Tiny ImageNet (ZenkeNet)"
+    legend = True
+    plot_single_model_accuracy_one_setting(
+        path_to_stored_networks,
+        no_of_models_for_loading,
+        suffix,
+        dataset_name,
+        folder="./Plots/",
+        legend=legend,
+    )
     ###################################################################
     # Prepare tSNE plots
-    datasets = ["PermutedMNIST", "SplitMNIST"]  # 'PermutedMNIST' or 'SplitMNIST'
+    datasets = [
+        "PermutedMNIST",
+        "SplitMNIST",
+    ]  # 'PermutedMNIST' or 'SplitMNIST'
     # datasets = ['SplitMNIST']
     for dataset in datasets:
         path_to_datasets = "./Data"
@@ -856,14 +1168,16 @@ if __name__ == "__main__":
         )
 
         set_seed(seed)
-        X_embedded_masked = TSNE(n_components=2, random_state=seed).fit_transform(
-            features_masked
-        )
+        X_embedded_masked = TSNE(
+            n_components=2, random_state=seed
+        ).fit_transform(features_masked)
         X_embedded_pure = TSNE(n_components=2, random_state=seed).fit_transform(
             features_pure
         )
         title_masked = "t-SNE result for the masked target model"
-        title_pure = "t-SNE result for the pure target model (without hypernetwork)"
+        title_pure = (
+            "t-SNE result for the pure target model (without hypernetwork)"
+        )
         for divide_by_class in [True, False]:
             if divide_by_class:
                 gt_for_masked_part = gt_class_masked
